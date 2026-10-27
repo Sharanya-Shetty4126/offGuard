@@ -1,0 +1,31 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Models and Telemetry Data (kept local/gitignored for size & privacy)
+models/*.pkl
+models/*.joblib
+data/
+*.csv
+*.parquet
+*.sqlite3
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+[Dd]esktop.ini
