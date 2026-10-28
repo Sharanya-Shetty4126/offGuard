@@ -178,36 +178,36 @@ class TelemetryCollector:
 
 
 def stream_telemetry(duration_sec: float = 10.0, interval_sec: float = 1.0) -> None:
-    """Demo stream: prints live telemetry snapshots to console."""
+    """Demo stream: prints live telemetry snapshots to console using local time."""
     config = AgentConfig(sample_interval_sec=interval_sec)
     collector = TelemetryCollector(config=config, episode_id="demo_stream")
 
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 82)
     print(f" offGuard Telemetry Monitor [Sampling every {interval_sec}s for {duration_sec}s]")
-    print("=" * 90)
+    print("=" * 82)
     print(
-        f"{'TIME (UTC)':<12} | {'CPU%':<5} | {'RAM%':<5} | {'AVAIL RAM':<10} | {'SWAP%':<5} | "
-        f"{'DISK W (MB/s)':<14} | {'LAG (s)':<8} | {'TOP PROCESS':<20}"
+        f"{'LOCAL TIME':<10} | {'CPU%':<5} | {'RAM%':<5} | {'FREE RAM':<9} | "
+        f"{'SWAP%':<5} | {'LAG(s)':<6} | {'TOP PROCESS':<22}"
     )
-    print("-" * 90)
+    print("-" * 82)
 
     start = time.time()
     try:
         while time.time() - start < duration_sec:
             sample = collector.collect_sample()
-            time_str = sample.timestamp_iso.split("T")[1][:8]
-            top_info = f"{sample.top_proc_name} ({sample.top_proc_mem_mb}MB)"
+            local_time_str = datetime.fromtimestamp(sample.timestamp).strftime("%H:%M:%S")
+            top_info = f"{sample.top_proc_name[:14]} ({sample.top_proc_mem_mb:.0f}M)"
 
             print(
-                f"{time_str:<12} | {sample.cpu_percent:<5.1f} | {sample.mem_percent:<5.1f} | "
-                f"{sample.mem_available_mb:<7.1f} MB | {sample.swap_percent:<5.1f} | "
-                f"{sample.disk_write_mb_s:<14.2f} | {sample.heartbeat_lag_s:<8.3f} | {top_info:<20}"
+                f"{local_time_str:<10} | {sample.cpu_percent:<5.1f} | {sample.mem_percent:<5.1f} | "
+                f"{sample.mem_available_mb:<6.0f} MB | {sample.swap_percent:<5.1f} | "
+                f"{sample.heartbeat_lag_s:<6.3f} | {top_info:<22}"
             )
             time.sleep(interval_sec)
     except KeyboardInterrupt:
         print("\nMonitoring stopped by user.")
 
-    print("=" * 90)
+    print("=" * 82)
     print("Stream completed.\n")
 
 
