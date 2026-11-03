@@ -325,3 +325,4 @@ def run_benchmark_comparison(
     print("=" * 90 + "\n")
 
     return reports
+

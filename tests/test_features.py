@@ -102,3 +102,4 @@ def test_lag_ablation_names():
     assert any("lag" in n for n in all_names)
     assert not any("lag" in n for n in no_lag_names)
     assert len(no_lag_names) < len(all_names)
+

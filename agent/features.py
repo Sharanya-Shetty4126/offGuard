@@ -204,3 +204,4 @@ class RollingFeaturePipeline:
                 names.append(f"m_{m}_slope_{w}s")
 
         return names
+

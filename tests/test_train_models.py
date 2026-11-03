@@ -153,3 +153,4 @@ def test_train_models_and_benchmark():
             assert rep.total_episodes == len(test_eps)
             assert 0.0 <= rep.episode_recall <= 1.0
             assert rep.false_alarms_per_hour >= 0.0
+
