@@ -22,4 +22,10 @@ To prevent data contamination:
   * **Warning Lead Time:** Distribution (median, 25th, 75th percentiles) of seconds of advance notice provided before actual unresponsiveness.
   * **False Alarms per Counter-Hour (FA/hr):** Quantifies operational disruption to cashier throughput.
   * **Precision-Recall Area (PR-AUC) and Brier Score / Calibration:** Reflects reliability of risk probabilities under severe class imbalance.
-* **Baseline Heuristic:** Every ML model must be benchmarked against a static threshold rule (e.g., memory $> 92\%$ AND swap $> 85\%$ for $\ge 10$ seconds) to verify whether ML provides real incremental value.
+* **Baseline Heuristic:** Every ML model must be benchmarked against a static threshold rule (e.g., memory $> 92\%$ AND swap $> 85\%$ for $\ge 10$ seconds) and a linear time-to-exhaustion trend to verify whether ML provides real incremental value.
+
+## 5. Agent Overhead & Self-Intrusion Budget
+To ensure monitoring does not degrade cashier performance, the collector is profiled continuously. See detailed empirical profile in [docs/collector_overhead.md](collector_overhead.md):
+* **RAM Consumption:** $\approx 21\,\text{MB}$ RSS.
+* **CPU Consumption:** $\le 1.9\%$ average.
+* **Collection Latency:** $\approx 25\,\text{ms}$ per 1.0s sample interval.
