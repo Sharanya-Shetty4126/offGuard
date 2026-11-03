@@ -78,20 +78,21 @@ def test_warmup_fill_tracking():
     pipeline = RollingFeaturePipeline(windows_sec=[10, 60])
     base_t = 100.0
 
+    feats = []
+    for i in range(61):
+        feats.append(pipeline.push_sample({"timestamp": base_t + i, "mem_percent": 50.0 + 0.1 * i}))
+
     # First sample
-    f1 = pipeline.push_sample({"timestamp": base_t, "mem_percent": 50.0})
-    assert f1["window_fill_ratio"] == 0.0
-    assert f1["window_filled"] == 0.0
+    assert feats[0]["window_fill_ratio"] == 0.0
+    assert feats[0]["window_filled"] == 0.0
 
     # Sample at 30 seconds
-    f30 = pipeline.push_sample({"timestamp": base_t + 30.0, "mem_percent": 55.0})
-    assert abs(f30["window_fill_ratio"] - 0.5) <= 0.05
-    assert f30["window_filled"] == 0.0
+    assert abs(feats[30]["window_fill_ratio"] - 0.5) <= 0.05
+    assert feats[30]["window_filled"] == 0.0
 
     # Sample at 60 seconds
-    f60 = pipeline.push_sample({"timestamp": base_t + 60.0, "mem_percent": 60.0})
-    assert f60["window_fill_ratio"] == 1.0
-    assert f60["window_filled"] == 1.0
+    assert feats[60]["window_fill_ratio"] == 1.0
+    assert feats[60]["window_filled"] == 1.0
 
 
 def test_lag_ablation_names():
@@ -102,4 +103,23 @@ def test_lag_ablation_names():
     assert any("lag" in n for n in all_names)
     assert not any("lag" in n for n in no_lag_names)
     assert len(no_lag_names) < len(all_names)
+
+
+def test_monotonic_priority_and_sleep_gap_detection():
+    """Verify monotonic timestamp is prioritized and large gaps (>10s) reset buffer."""
+    pipeline = RollingFeaturePipeline(windows_sec=[10, 30], gap_threshold_sec=10.0)
+
+    # Sample with monotonic timestamp
+    f1 = pipeline.push_sample({"timestamp": 1700000000.0, "timestamp_mono": 100.0, "mem_percent": 50.0})
+    assert f1["gap_detected"] == 0.0
+
+    # Normal tick 1 second later
+    f2 = pipeline.push_sample({"timestamp": 1700000001.0, "timestamp_mono": 101.0, "mem_percent": 51.0})
+    assert f2["gap_detected"] == 0.0
+
+    # Sleep / suspend jump of 30 seconds
+    f3 = pipeline.push_sample({"timestamp": 1700000031.0, "timestamp_mono": 131.0, "mem_percent": 52.0})
+    assert f3["gap_detected"] == 1.0
+    # Rolling buffer should have reset, so fill ratio should be reset
+    assert f3["window_filled"] == 0.0
 

@@ -100,7 +100,7 @@ class TimeToExhaustionBaseline:
         self.ram_floor = (
             target_ram_floor_mb
             if target_ram_floor_mb is not None
-            else cfg.min_safe_ram_mb
+            else getattr(cfg, 'target_exhaustion_floor_mb', 200.0)
         )
         self.min_drain_rate = min_drain_rate_mb_s
         self.horizon_sec = float(cfg.default_horizon_sec)

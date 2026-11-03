@@ -35,7 +35,8 @@ class AgentConfig:
     max_local_queue_size: int = 500  # Local SQLite / file queue when offline
 
     # --- Hardware Safety & Stress Guardrails ---
-    min_safe_ram_mb: float = 500.0  # Auto-kill stress script if free RAM dips below this floor
+    min_safe_ram_mb: float = 500.0  # Auto-kill stress script if free RAM dips below this floor (test harness breaker)
+    target_exhaustion_floor_mb: float = 200.0  # Decoupled exhaustion floor for TimeToExhaustionBaseline (prevents circularity)
     max_stress_duration_sec: float = 300.0  # Hard timeout for induced failure scripts (up to 5 min)
 
 

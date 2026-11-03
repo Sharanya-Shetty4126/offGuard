@@ -112,3 +112,30 @@ def test_detector_recovery_cooldown():
     # Tick 3: Fully clears to OK!
     r3 = detector.process_sample(_create_mock_sample(105.0))
     assert r3.state == TerminalState.OK
+
+
+def test_escalation_never_suppressed_by_cooldown():
+    """Verify that an escalation from WATCH to AT_RISK emits should_send_network=True immediately."""
+    mock_model = MockModelArtifact(risk_score=0.60)
+    config = AgentConfig(alert_cooldown_sec=30.0, hysteresis_ticks=2, at_risk_threshold=0.80)
+    detector = EarlyWarningDetector(model_artifact=mock_model, config=config)
+
+    # 1. State changes from OK to WATCH -> must send
+    a1 = detector.process_sample(_create_mock_sample(100.0))
+    assert a1.state == TerminalState.WATCH
+    assert a1.should_send_network is True
+
+    # 2. Repeated WATCH 1 second later -> throttled by cooldown!
+    a2 = detector.process_sample(_create_mock_sample(101.0))
+    assert a2.state == TerminalState.WATCH
+    assert a2.should_send_network is False
+
+    # 3. Model score escalates to 0.90 -> breaches threshold to AT_RISK
+    mock_model.risk_score = 0.90
+    detector.process_sample(_create_mock_sample(102.0))  # streak 1
+    a4 = detector.process_sample(_create_mock_sample(103.0))  # streak 2 -> AT_RISK
+
+    # Escalation MUST send immediately, NOT throttled
+    assert a4.state == TerminalState.AT_RISK
+    assert a4.should_send_network is True
+

@@ -45,6 +45,7 @@ class AlertPayload:
     timestamp: float
     timestamp_iso: str
     state_changed: bool
+    should_send_network: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -185,14 +186,24 @@ class EarlyWarningDetector:
             sample_dict, features, risk_score
         )
 
-        # Check outbound alert cooldown
+        # Check outbound alert cooldown & escalation rules
+        state_order = {TerminalState.OK: 0, TerminalState.WATCH: 1, TerminalState.AT_RISK: 2}
+        is_escalation = state_order[self.current_state] > state_order[previous_state]
         now_mono = time.monotonic()
-        should_send = state_changed or (
-            self.current_state == TerminalState.AT_RISK
-            and (now_mono - self._last_alert_time) >= self.config.alert_cooldown_sec
-        )
-        if should_send:
+
+        if is_escalation or state_changed:
+            # Escalations and state changes ALWAYS emit immediately, resetting cooldown
+            should_send = True
             self._last_alert_time = now_mono
+        else:
+            # Repeated identical elevated state: throttle by alert_cooldown_sec
+            if self.current_state in (TerminalState.WATCH, TerminalState.AT_RISK):
+                time_since_last = now_mono - self._last_alert_time
+                should_send = time_since_last >= self.config.alert_cooldown_sec
+                if should_send:
+                    self._last_alert_time = now_mono
+            else:
+                should_send = False
 
         return AlertPayload(
             terminal_id=self.terminal_id,
@@ -206,4 +217,6 @@ class EarlyWarningDetector:
             timestamp=ts,
             timestamp_iso=ts_iso,
             state_changed=state_changed,
+            should_send_network=should_send,
         )
+

@@ -76,6 +76,7 @@ class TelemetrySample:
     commit_percent: float = 0.0
     commit_available_mb: float = 0.0
     ctx_switches_s: float = 0.0
+    timestamp_mono: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert sample to dictionary."""
@@ -257,6 +258,7 @@ class TelemetryCollector:
             commit_percent=commit_percent,
             commit_available_mb=commit_available_mb,
             ctx_switches_s=ctx_switches_s,
+            timestamp_mono=round(now_mono, 3),
         )
 
 

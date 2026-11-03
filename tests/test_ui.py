@@ -40,3 +40,20 @@ def test_ui_headless_mode():
 
     # Clean close
     ui.close()
+
+
+def test_ui_acknowledge_alert():
+    """Verify cashier acknowledgement state transitions and resetting upon OK."""
+    ui = CashierWarningWindow(terminal_id="COUNTER 02", headless=True)
+    assert not ui.is_acknowledged
+
+    # Cashier acknowledges
+    ui.acknowledge_alert()
+    assert ui.is_acknowledged
+
+    # Update with OK resets acknowledgment
+    ui.update_alert(_create_mock_alert(TerminalState.OK, 0.1))
+    assert not ui.is_acknowledged
+
+    ui.close()
+

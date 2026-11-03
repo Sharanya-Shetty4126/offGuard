@@ -9,12 +9,13 @@ A lightweight, always-on-top floating Tkinter window designed for retail counter
 4. Headless & Replay Safe: Handles headless test environments gracefully.
 """
 
+import ctypes
 from datetime import datetime
 import os
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Optional, Union
 
 from agent.collector import TelemetryCollector, TelemetrySample
 from agent.detector import AlertPayload, EarlyWarningDetector, TerminalState
@@ -39,6 +40,14 @@ class CashierWarningWindow:
         self.headless = headless
         self.root = None
         self._is_running = False
+        self.is_acknowledged = False
+        self.lbl_cashier_guide = None
+        self.lbl_status = None
+        self.lbl_customer_msg = None
+        self.lbl_clock = None
+        self.lbl_footer = None
+        self.banner_frame = None
+        self.btn_ack = None
 
         if not self.headless:
             self._init_gui()
@@ -140,7 +149,27 @@ class CashierWarningWindow:
             )
             self.lbl_cashier_guide.pack(anchor="w", padx=10, pady=(0, 6))
 
-            # --- 5. Diagnostic Footer ---
+            # --- 5. Acknowledge Action Toolbar ---
+            btn_frame = tk.Frame(self.root, bg=self.BG_DARK)
+            btn_frame.pack(fill="x", padx=16, pady=(2, 4))
+
+            self.btn_ack = tk.Button(
+                btn_frame,
+                text="Acknowledge Alert",
+                font=("Segoe UI", 9, "bold"),
+                bg="#3a3a3a",
+                fg=self.TEXT_LIGHT,
+                activebackground="#4a4a4a",
+                activeforeground=self.TEXT_LIGHT,
+                relief="flat",
+                padx=10,
+                pady=3,
+                cursor="hand2",
+                command=self.acknowledge_alert,
+            )
+            self.btn_ack.pack(side="right")
+
+            # --- 6. Diagnostic Footer ---
             self.lbl_footer = tk.Label(
                 self.root,
                 text="RAM: --% | Commit: --% | CPU: --% | Top Process: --",
@@ -148,7 +177,10 @@ class CashierWarningWindow:
                 fg="#a19f9d",
                 bg=self.BG_DARK,
             )
-            self.lbl_footer.pack(side="bottom", pady=8)
+            self.lbl_footer.pack(side="bottom", pady=4)
+
+            # Prevent focus stealing from POS scanning barcode hardware
+            self._apply_windows_noactivate()
 
             self._is_running = True
         except Exception as e:
@@ -156,12 +188,48 @@ class CashierWarningWindow:
             self.headless = True
             self.root = None
 
+    def _apply_windows_noactivate(self) -> None:
+        """Apply WS_EX_NOACTIVATE and WS_EX_TOOLWINDOW to prevent stealing keyboard/scanner focus."""
+        if sys.platform != "win32" or not self.root:
+            return
+        try:
+            self.root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            if not hwnd:
+                hwnd = self.root.winfo_id()
+
+            GWL_EXSTYLE = -20
+            WS_EX_NOACTIVATE = 0x08000000
+            WS_EX_TOOLWINDOW = 0x00000080
+
+            get_long = getattr(ctypes.windll.user32, "GetWindowLongPtrW", ctypes.windll.user32.GetWindowLongW)
+            set_long = getattr(ctypes.windll.user32, "SetWindowLongPtrW", ctypes.windll.user32.SetWindowLongW)
+
+            current_style = get_long(hwnd, GWL_EXSTYLE)
+            set_long(hwnd, GWL_EXSTYLE, current_style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+        except Exception:
+            pass
+
+    def acknowledge_alert(self) -> None:
+        """Cashier acknowledges degradation alert, silencing guidance alarm."""
+        self.is_acknowledged = True
+        if self.lbl_cashier_guide:
+            self.lbl_cashier_guide.configure(
+                text="ACKNOWLEDGED: Complete active sale. Queue diversion confirmed.",
+                fg="#9ca3af",
+            )
+        if self.btn_ack:
+            self.btn_ack.configure(text="Acknowledged ✓", state="disabled", bg="#2a2a2a")
+
     def update_alert(
         self,
         alert: AlertPayload,
         sample: Optional[Union[TelemetrySample, dict]] = None,
     ) -> None:
         """Update window labels and color scheme based on incoming alert."""
+        if alert.state == TerminalState.OK:
+            self.is_acknowledged = False
+
         if self.headless or self.root is None:
             return
 
@@ -185,8 +253,14 @@ class CashierWarningWindow:
                 self.banner_frame.configure(bg=bg_col)
                 self.lbl_status.configure(text=status_text, bg=bg_col)
                 self.lbl_customer_msg.configure(text=alert.customer_message)
-                self.lbl_cashier_guide.configure(text=alert.cashier_guidance, fg=guide_col)
+                if not self.is_acknowledged:
+                    self.lbl_cashier_guide.configure(text=alert.cashier_guidance, fg=guide_col)
                 self.lbl_clock.configure(text=datetime.now().strftime("%H:%M:%S"))
+
+                if alert.state == TerminalState.OK:
+                    self.is_acknowledged = False
+                    if self.btn_ack:
+                        self.btn_ack.configure(text="Acknowledge Alert", state="normal", bg="#3a3a3a")
 
                 if sample is not None:
                     d = sample.to_dict() if hasattr(sample, "to_dict") else sample
@@ -249,3 +323,4 @@ if __name__ == "__main__":
     replay_file = sys.argv[1] if len(sys.argv) > 1 else None
     speed_factor = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
     run_live_ui(replay_source=replay_file, speedup=speed_factor)
+

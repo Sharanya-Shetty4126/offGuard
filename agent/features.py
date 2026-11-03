@@ -49,9 +49,15 @@ def _extract_metric(sample: Union[Dict[str, Any], Any], metric_name: str) -> flo
 
 
 def _extract_timestamp(sample: Union[Dict[str, Any], Any]) -> float:
-    """Extract timestamp float."""
+    """Extract monotonic timestamp if present, falling back to epoch timestamp."""
     if isinstance(sample, dict):
+        mono = sample.get("timestamp_mono")
+        if mono is not None and float(mono) > 0.0:
+            return float(mono)
         return float(sample.get("timestamp", 0.0))
+    mono = getattr(sample, "timestamp_mono", None)
+    if mono is not None and float(mono) > 0.0:
+        return float(mono)
     return float(getattr(sample, "timestamp", 0.0))
 
 
@@ -89,23 +95,36 @@ class RollingFeaturePipeline:
         self,
         windows_sec: Optional[List[int]] = None,
         config: Optional[AgentConfig] = None,
+        gap_threshold_sec: float = 10.0,
     ):
         cfg = config or DEFAULT_CONFIG
         self.windows_sec = sorted(windows_sec or cfg.window_sizes_sec)
         self.max_window_sec = max(self.windows_sec) if self.windows_sec else 60.0
+        self.gap_threshold_sec = gap_threshold_sec
 
         # Buffer stores (timestamp, dict_of_base_metrics)
         self._buffer: deque[tuple[float, Dict[str, float]]] = deque()
         self._first_seen_timestamp: Optional[float] = None
+        self._last_sample_ts: Optional[float] = None
 
     def reset(self) -> None:
         """Clear historical rolling buffer for a new episode."""
         self._buffer.clear()
         self._first_seen_timestamp = None
+        self._last_sample_ts = None
 
     def push_sample(self, sample: Union[Dict[str, Any], Any]) -> Dict[str, float]:
         """Ingest a single sample and return derived rolling features at timestamp t."""
         ts = _extract_timestamp(sample)
+
+        # Discontinuity / sleep gap check
+        gap_detected = 0.0
+        if self._last_sample_ts is not None and (ts - self._last_sample_ts) > self.gap_threshold_sec:
+            gap_detected = 1.0
+            self._buffer.clear()
+            self._first_seen_timestamp = ts
+
+        self._last_sample_ts = ts
         if self._first_seen_timestamp is None:
             self._first_seen_timestamp = ts
 
@@ -129,11 +148,12 @@ class RollingFeaturePipeline:
         for m in BASE_METRICS:
             features[f"raw_{m}"] = round(metrics[m], 3)
 
-        # 2. Window filling metadata
+        # 2. Window filling & temporal continuity metadata
         elapsed_since_start = max(0.0, ts - self._first_seen_timestamp)
         fill_ratio = min(1.0, elapsed_since_start / self.max_window_sec) if self.max_window_sec > 0 else 1.0
         features["window_fill_ratio"] = round(fill_ratio, 3)
         features["window_filled"] = 1.0 if fill_ratio >= 0.95 else 0.0
+        features["gap_detected"] = gap_detected
 
         # 3. Rolling window aggregations (Mean, Slope, Std)
         for w in self.windows_sec:
@@ -196,6 +216,7 @@ class RollingFeaturePipeline:
 
         names.append("window_fill_ratio")
         names.append("window_filled")
+        names.append("gap_detected")
 
         for w in sorted(windows):
             for m in active_metrics:

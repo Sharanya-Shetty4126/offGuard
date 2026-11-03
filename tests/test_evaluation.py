@@ -108,4 +108,7 @@ def test_evaluate_detector_with_baselines():
     assert report.episode_recall == 1.0
     assert report.lead_time_median_s > 0.0
     assert report.false_alarms_per_hour == 0.0
+    assert report.false_alarms_per_8hr_shift == 0.0
     assert "effective_recall_ge_60s" in report.summary_dict()
+    assert "effective_recall_ci_95" in report.summary_dict()
+    assert "scenario_breakdown" in report.summary_dict()
