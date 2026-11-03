@@ -54,3 +54,4 @@ def test_record_hard_negative_episode():
         assert not manifest.has_failed
         assert manifest.workload_manifest is not None
         assert manifest.workload_manifest["workload_type"] == "app_startup"
+

@@ -65,3 +65,4 @@ def test_antivirus_scan_workload():
     assert manifest.workload_type == "antivirus_burst"
     assert not manifest.is_failure_expected
     assert manifest.duration_seconds >= 0.4
+

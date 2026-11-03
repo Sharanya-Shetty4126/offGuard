@@ -271,3 +271,4 @@ class AntivirusScanWorkload:
             peak_ram_mb=0.0,
             is_failure_expected=False,
         )
+
