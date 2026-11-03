@@ -12,6 +12,7 @@ class AgentConfig:
 
     # --- Feature Engineering & Windows ---
     window_sizes_sec: List[int] = field(default_factory=lambda: [10, 30, 60])
+    warmup_duration_sec: float = 60.0  # Initial window filling duration (features warming up)
 
     # --- Target Horizons & Ground Truth ---
     default_horizon_sec: int = 120  # Forecasting window H in seconds (evaluate 60, 90, 120)
@@ -35,7 +36,7 @@ class AgentConfig:
 
     # --- Hardware Safety & Stress Guardrails ---
     min_safe_ram_mb: float = 500.0  # Auto-kill stress script if free RAM dips below this floor
-    max_stress_duration_sec: float = 90.0  # Hard timeout for induced failure scripts
+    max_stress_duration_sec: float = 300.0  # Hard timeout for induced failure scripts (up to 5 min)
 
 
 # Global default configuration instance

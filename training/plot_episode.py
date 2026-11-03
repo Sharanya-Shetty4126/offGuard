@@ -182,3 +182,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     plot_episode(args.source, output_png_path=args.out, dpi=args.dpi)
+

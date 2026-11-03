@@ -28,3 +28,4 @@ def test_plot_episode_generation():
 
         assert os.path.exists(result_path)
         assert os.path.getsize(result_path) > 1000  # Valid PNG image generated
+

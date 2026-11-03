@@ -123,12 +123,24 @@ def record_episode(
         if workload_thread:
             workload_thread.join(timeout=2.0)
 
-    # Ground-truth labeling and post-failure masking
+    # Ground-truth labeling and post-failure/recovery masking
+    proxy_ts = None
+    proxy_mode = None
+    cutoff_ts = None
+    if workload_manifest_dict:
+        if workload_manifest_dict.get("safety_aborted"):
+            proxy_ts = workload_manifest_dict.get("end_timestamp")
+            proxy_mode = f"proxy_{workload_manifest_dict.get('exit_reason', 'breaker_trip')}"
+        cutoff_ts = workload_manifest_dict.get("end_timestamp")
+
     labeled_samples, ground_truth = label_episode_samples(
         raw_samples,
         horizon_sec=cfg.default_horizon_sec,
         config=cfg,
         drop_post_failure=False,
+        proxy_failure_timestamp=proxy_ts,
+        proxy_failure_mode=proxy_mode,
+        recovery_cutoff_timestamp=cutoff_ts,
     )
 
     # Prepare output directory

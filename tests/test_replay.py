@@ -83,3 +83,4 @@ def test_replay_reset_and_iterator():
     collector.reset()
     assert collector.current_index == 0
     assert collector.has_next
+
