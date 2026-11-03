@@ -2,7 +2,9 @@
 
 Calculates:
 - Lead Time Distribution (median, mean, min, max, 25th/75th percentiles)
-- Episode-Level Detection Recall (Fraction of failures caught in advance)
+- Episode-Level Detection Recall (Any advance detection before failure)
+- Effective Retail Recall (>= 60s Lead Time): Fraction of failures providing >= 60s warning
+- Late Warnings (< 60s): Alerts that arrived too late for cashier queue diversion
 - False Alarms per Counter-Hour (FA/hr) on routine/normal operating periods
 - Sample-level Precision, Recall, and F1 on pre-failure windows
 """
@@ -25,6 +27,7 @@ class EpisodeEvalResult:
     first_alert_timestamp: Optional[float]
     lead_time_seconds: Optional[float]
     detected_in_advance: bool
+    effective_warning_ge_60s: bool  # Lead time >= 60.0s (actionable for POS)
     false_alert_events: int
     false_positive_ticks: int
     normal_duration_seconds: float
@@ -38,7 +41,10 @@ class EvaluationReport:
     total_episodes: int
     failure_episodes: int
     normal_episodes: int
-    episode_recall: float  # Fraction of failure episodes detected in advance
+    episode_recall: float  # Fraction of failure episodes detected in advance (> 0s)
+    effective_recall_ge_60s: float  # Fraction of failures caught with >= 60s lead time
+    late_warnings_count: int  # Caught, but < 60s lead time
+    missed_failures_count: int  # Not caught prior to failure
     lead_time_mean_s: float
     lead_time_median_s: float
     lead_time_min_s: float
@@ -60,6 +66,9 @@ class EvaluationReport:
             "failure_episodes": self.failure_episodes,
             "normal_episodes": self.normal_episodes,
             "episode_recall": round(self.episode_recall, 4),
+            "effective_recall_ge_60s": round(self.effective_recall_ge_60s, 4),
+            "late_warnings_count": self.late_warnings_count,
+            "missed_failures_count": self.missed_failures_count,
             "lead_time_median_s": round(self.lead_time_median_s, 1),
             "lead_time_mean_s": round(self.lead_time_mean_s, 1),
             "lead_time_iqr_s": [round(self.lead_time_p25_s, 1), round(self.lead_time_p75_s, 1)],
@@ -84,6 +93,7 @@ def evaluate_episode(
     samples: Sequence[Dict[str, Any]],
     predictions: Sequence[Union[bool, int, float]],
     horizon_sec: float = 120.0,
+    min_effective_lead_time_sec: float = 60.0,
     risk_threshold: float = 0.5,
 ) -> EpisodeEvalResult:
     """Evaluate predictions on a single episode.
@@ -92,6 +102,7 @@ def evaluate_episode(
         samples: Sequence of sample dicts (must contain 'timestamp', 'heartbeat_lag_s').
         predictions: Sequence of binary alerts (bool/int) or risk probabilities (float [0.0, 1.0]).
         horizon_sec: Target early-warning horizon H in seconds.
+        min_effective_lead_time_sec: Minimum lead time required for cashier action (default: 60s).
         risk_threshold: Threshold above which float risk score is considered an alert.
     """
     if len(samples) != len(predictions):
@@ -129,7 +140,6 @@ def evaluate_episode(
             if is_alert:
                 false_positive_ticks += 1
                 if not in_alert_streak:
-                    # New false alarm event (transition into alert)
                     false_alert_events += 1
                     in_alert_streak = True
             else:
@@ -141,11 +151,12 @@ def evaluate_episode(
     if meta.has_failed and failure_ts is not None and first_alert_ts is not None:
         lead_time = max(0.0, failure_ts - first_alert_ts)
         detected = lead_time > 0.0
+        effective = lead_time >= min_effective_lead_time_sec
     else:
         lead_time = 0.0 if meta.has_failed else None
         detected = False
+        effective = False
 
-    # Estimate normal duration in seconds (assuming 1s per normal tick)
     normal_duration_s = float(normal_ticks)
 
     return EpisodeEvalResult(
@@ -155,6 +166,7 @@ def evaluate_episode(
         first_alert_timestamp=first_alert_ts,
         lead_time_seconds=lead_time,
         detected_in_advance=detected,
+        effective_warning_ge_60s=effective,
         false_alert_events=false_alert_events,
         false_positive_ticks=false_positive_ticks,
         normal_duration_seconds=normal_duration_s,
@@ -166,18 +178,11 @@ def evaluate_detector(
     predict_fn: Callable[[Dict[str, Any]], Union[bool, int, float]],
     episodes: Sequence[Sequence[Dict[str, Any]]],
     horizon_sec: float = 120.0,
+    min_effective_lead_time_sec: float = 60.0,
     risk_threshold: float = 0.5,
     reset_fn: Optional[Callable[[], None]] = None,
 ) -> EvaluationReport:
-    """Evaluate a predictor/baseline function across a collection of episodes.
-
-    Args:
-        predict_fn: Callable accepting a single telemetry sample dict and returning alert/score.
-        episodes: List of episodes, each being a list of sample dicts.
-        horizon_sec: Early-warning horizon in seconds.
-        risk_threshold: Threshold to convert continuous risk score to alert.
-        reset_fn: Optional callable to reset stateful baselines/models between episodes.
-    """
+    """Evaluate a predictor/baseline function across a collection of episodes."""
     episode_results: List[EpisodeEvalResult] = []
     lead_times: List[float] = []
 
@@ -197,6 +202,7 @@ def evaluate_detector(
             samples=ep,
             predictions=preds,
             horizon_sec=horizon_sec,
+            min_effective_lead_time_sec=min_effective_lead_time_sec,
             risk_threshold=risk_threshold,
         )
         episode_results.append(eval_res)
@@ -226,9 +232,15 @@ def evaluate_detector(
     failure_episodes_count = sum(1 for r in episode_results if r.has_failed)
     normal_episodes_count = len(episode_results) - failure_episodes_count
     detected_count = sum(1 for r in episode_results if r.has_failed and r.detected_in_advance)
+    effective_count = sum(1 for r in episode_results if r.has_failed and r.effective_warning_ge_60s)
+    late_count = sum(1 for r in episode_results if r.has_failed and r.detected_in_advance and not r.effective_warning_ge_60s)
+    missed_count = failure_episodes_count - detected_count
 
     episode_recall = (
         (detected_count / failure_episodes_count) if failure_episodes_count > 0 else 1.0
+    )
+    effective_recall = (
+        (effective_count / failure_episodes_count) if failure_episodes_count > 0 else 1.0
     )
 
     if lead_times:
@@ -244,7 +256,6 @@ def evaluate_detector(
     normal_hours = total_normal_sec / 3600.0
     fa_per_hour = (total_false_events / normal_hours) if normal_hours > 0 else 0.0
 
-    # Sample-level precision, recall, f1
     precision = (total_tp / (total_tp + total_fp)) if (total_tp + total_fp) > 0 else 0.0
     recall = (total_tp / (total_tp + total_fn)) if (total_tp + total_fn) > 0 else 0.0
     f1 = (
@@ -258,6 +269,9 @@ def evaluate_detector(
         failure_episodes=failure_episodes_count,
         normal_episodes=normal_episodes_count,
         episode_recall=episode_recall,
+        effective_recall_ge_60s=effective_recall,
+        late_warnings_count=late_count,
+        missed_failures_count=missed_count,
         lead_time_mean_s=lead_mean,
         lead_time_median_s=lead_median,
         lead_time_min_s=lead_min,
@@ -272,4 +286,3 @@ def evaluate_detector(
         sample_level_f1=f1,
         episode_results=episode_results,
     )
-

@@ -41,11 +41,19 @@ For each base metric $M \in \{\text{cpu\_percent}, \text{mem\_percent}, \text{sw
 
 ## 3. Labeling and Ground-Truth Definitions
 
-* **Failure Time ($T_{\text{failure}}$):** The earliest timestamp where:
-  $$\text{heartbeat\_lag\_s} > 3.0\text{s for } 3 \text{ consecutive ticks}$$
-* **Prediction Horizon ($H$):** Target is $H = 120$ seconds (also evaluated at $60$s and $90$s).
+### Dual Failure Definition ($T_{\text{failure}}$)
+A system unresponsiveness event begins at $T_{\text{failure}}$, defined as the earliest occurrence of either:
+
+1. **Sustained Degradation:** $\text{heartbeat\_lag\_s} \ge 3.0\,\text{s}$ for $\ge 3$ consecutive ticks ($T_{\text{failure}}$ = timestamp of the first tick of the streak).
+2. **Catastrophic Freeze / Timestamp Gap:** If the OS hangs completely, the collector itself is starved and cannot tick. Thus, an unresponsiveness event is also triggered if:
+   * A single tick arrives with $\text{heartbeat\_lag\_s} \ge 6.0\,\text{s}$ ($T_{\text{failure}} = t - \text{lag}$), OR
+   * A missing tick gap occurs between adjacent timestamps where $t_i - t_{i-1} \ge 6.0\,\text{s}$ ($T_{\text{failure}} = t_{i-1} + 1.0\,\text{s}$).
+
+### Prediction Horizon ($H$) & Effective Retail Lead Time
+* **Target Horizon ($H$):** $H = 120$ seconds default (evaluated at $60$s, $90$s, $120$s).
 * **Target Label (`target_fail_within_H`):**
   $$Y(t) = \begin{cases} 1 & \text{if } T_{\text{failure}} - H \le t < T_{\text{failure}} \\ 0 & \text{if } t < T_{\text{failure}} - H \end{cases}$$
+* **Effective Lead Time Criterion:** An alert arriving with $< 60\,\text{s}$ lead time is marked as a *late warning* (insufficient for a cashier to finish a transaction and divert the queue). The primary evaluation metric is **Effective Recall ($\ge 60\,\text{s}$)**.
 * **Post-Failure Masking (`is_post_failure`):**
   $$t \ge T_{\text{failure}} \implies \text{DROPPED from training dataset}$$
   *(Prevents models from learning trivial flatlines of an already frozen system).*

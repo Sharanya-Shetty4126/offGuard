@@ -54,7 +54,7 @@ def _generate_synthetic_episode(
 def test_normal_run_no_failure():
     """Verify that healthy runs without sustained lag are labeled fully as negative."""
     samples = _generate_synthetic_episode(total_seconds=100, has_failure=False)
-    res = find_failure_point(samples, lag_threshold_sec=3.0, consecutive_ticks=3)
+    res = find_failure_point(samples)
     assert res is None
 
     labeled, meta = label_episode_samples(samples, horizon_sec=60.0)
@@ -71,7 +71,7 @@ def test_intermittent_spikes_do_not_trigger_failure():
     samples = _generate_synthetic_episode(
         total_seconds=100, has_failure=False, intermittent_spikes=True
     )
-    res = find_failure_point(samples, lag_threshold_sec=3.0, consecutive_ticks=3)
+    res = find_failure_point(samples)
     assert res is None
 
     labeled, meta = label_episode_samples(samples, horizon_sec=60.0)
@@ -81,41 +81,99 @@ def test_intermittent_spikes_do_not_trigger_failure():
 
 def test_sustained_failure_labeling_and_horizon():
     """Verify exact T_failure detection and target window [T_failure - H, T_failure)."""
-    # 200 samples total, failure starts at sample index 150 (timestamp = 1150.0)
     samples = _generate_synthetic_episode(
         total_seconds=200, failure_start_sec=150, has_failure=True
     )
 
-    failure_res = find_failure_point(samples, lag_threshold_sec=3.0, consecutive_ticks=3)
+    failure_res = find_failure_point(samples)
     assert failure_res is not None
-    idx, ts = failure_res
+    idx, ts, mode = failure_res
     assert idx == 150
     assert ts == 1150.0
+    assert mode == "consecutive_lag"
 
-    # Horizon H = 50 seconds.
-    # Pre-failure target window: [1150 - 50, 1150) = [1100.0, 1150.0) -> indices 100 to 149
     labeled, meta = label_episode_samples(samples, horizon_sec=50.0)
 
     assert meta.has_failed
     assert meta.failure_timestamp == 1150.0
-    assert meta.streak_start_index == 150
-    assert meta.pre_failure_samples == 50  # 50 ticks in pre-failure window
-    assert meta.post_failure_samples == 50  # indices 150..199 are post failure
+    assert meta.failure_index == 150
+    assert meta.failure_mode == "consecutive_lag"
+    assert meta.pre_failure_samples == 50
+    assert meta.post_failure_samples == 50
 
-    # Check labels before horizon (< 1100.0)
     for s in labeled[:100]:
         assert s["target_fail_within_H"] == 0
         assert not s["is_post_failure"]
 
-    # Check labels inside horizon [1100.0, 1150.0)
     for s in labeled[100:150]:
         assert s["target_fail_within_H"] == 1
         assert not s["is_post_failure"]
 
-    # Check post-failure zone (>= 1150.0)
     for s in labeled[150:]:
         assert s["target_fail_within_H"] == 0
         assert s["is_post_failure"]
+
+
+def test_catastrophic_single_tick_hang():
+    """Verify that a single massive lag sample (whole machine hung then woke up) is caught."""
+    # 30 seconds of baseline: timestamps 1000.0 to 1029.0
+    samples = _generate_synthetic_episode(total_seconds=30, has_failure=False)
+    # Inject a 15-second hang: the machine wakes up 15 seconds late at 1045.0
+    samples.append(
+        {
+            "timestamp": 1045.0,
+            "timestamp_iso": "2026-11-03T10:00:45Z",
+            "episode_id": "ep_hang",
+            "cpu_percent": 100.0,
+            "mem_percent": 95.0,
+            "mem_available_mb": 400.0,
+            "swap_percent": 85.0,
+            "disk_read_mb_s": 0.0,
+            "disk_write_mb_s": 0.0,
+            "heartbeat_lag_s": 15.0,  # Single massive tick!
+            "top_proc_name": "python.exe",
+            "top_proc_cpu": 90.0,
+            "top_proc_mem_mb": 1500.0,
+        }
+    )
+
+    failure_res = find_failure_point(samples, catastrophic_threshold_sec=6.0)
+    assert failure_res is not None
+    idx, freeze_start_ts, mode = failure_res
+    assert mode in ("catastrophic_lag", "timestamp_gap")
+    # Freeze began right after sample 29 (timestamp 1029.0 + 1.0 = 1030.0)
+    assert abs(freeze_start_ts - 1030.0) <= 1.0
+
+
+def test_missing_ticks_timestamp_gap():
+    """Verify that a missing sample gap (collector was frozen/dead) is caught as a freeze."""
+    samples = []
+    # 20 normal samples at t = 1000..1019
+    for i in range(20):
+        samples.append(
+            {
+                "timestamp": 1000.0 + i,
+                "heartbeat_lag_s": 0.05,
+                "episode_id": "ep_gap",
+            }
+        )
+
+    # 15-second gap where machine completely hung and no ticks executed!
+    # Next sample arrives at 1035.0
+    samples.append(
+        {
+            "timestamp": 1035.0,
+            "heartbeat_lag_s": 0.05,  # even if lag counter was reset
+            "episode_id": "ep_gap",
+        }
+    )
+
+    failure_res = find_failure_point(samples, catastrophic_threshold_sec=6.0)
+    assert failure_res is not None
+    idx, freeze_start_ts, mode = failure_res
+    assert mode == "timestamp_gap"
+    # Freeze began right after sample 19 (at timestamp 1020.0)
+    assert freeze_start_ts == 1020.0
 
 
 def test_drop_post_failure_flag():
@@ -127,7 +185,5 @@ def test_drop_post_failure_flag():
 
     assert meta.total_samples == 100
     assert meta.post_failure_samples == 20
-    # Length of returned list should be exactly 80
     assert len(labeled) == 80
     assert all(not s["is_post_failure"] for s in labeled)
-

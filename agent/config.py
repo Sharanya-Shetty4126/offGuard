@@ -15,8 +15,10 @@ class AgentConfig:
 
     # --- Target Horizons & Ground Truth ---
     default_horizon_sec: int = 120  # Forecasting window H in seconds (evaluate 60, 90, 120)
-    unresponsive_lag_threshold_sec: float = 3.0  # Heartbeat lag considered frozen
+    min_effective_lead_time_sec: float = 60.0  # Minimum actionable warning lead time for cashier
+    unresponsive_lag_threshold_sec: float = 3.0  # Heartbeat lag considered degraded/frozen
     consecutive_lag_ticks: int = 3  # Number of delayed ticks to trigger ground-truth freeze
+    catastrophic_lag_threshold_sec: float = 6.0  # Single-tick lag or timestamp gap denoting complete OS freeze
 
     # --- State Machine & Alerting ---
     hysteresis_ticks: int = 3  # Require N consecutive high-risk predictions to trigger AT-RISK
