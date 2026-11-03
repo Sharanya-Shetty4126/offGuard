@@ -106,3 +106,4 @@ def test_disk_thrash_injector_short_run():
     assert manifest.allocated_peak_mb > 0.0
     # Directory should be cleaned up
     assert not os.path.exists(temp_dir)
+

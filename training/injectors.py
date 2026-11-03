@@ -385,3 +385,4 @@ class DiskThrashInjector:
             allocated_peak_mb=round(bytes_written / (1024 * 1024), 1),
             safety_aborted=False,
         )
+
