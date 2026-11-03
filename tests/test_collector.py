@@ -20,6 +20,9 @@ def test_collect_single_sample():
     assert 0.0 <= sample.mem_percent <= 100.0
     assert sample.mem_available_mb > 0.0
     assert 0.0 <= sample.swap_percent <= 100.0
+    assert 0.0 <= sample.commit_percent <= 100.0
+    assert sample.commit_available_mb >= 0.0
+    assert sample.ctx_switches_s >= 0.0
     assert sample.disk_read_mb_s >= 0.0
     assert sample.disk_write_mb_s >= 0.0
     assert sample.heartbeat_lag_s >= 0.0
@@ -43,6 +46,9 @@ def test_sample_dict_conversion():
         "mem_percent",
         "mem_available_mb",
         "swap_percent",
+        "commit_percent",
+        "commit_available_mb",
+        "ctx_switches_s",
         "disk_read_mb_s",
         "disk_write_mb_s",
         "heartbeat_lag_s",
@@ -54,11 +60,11 @@ def test_sample_dict_conversion():
 
 
 def test_lag_tracking_on_delay():
-    """Verify that intentional scheduler delay is properly captured as heartbeat lag."""
+    """Verify that intentional scheduler delay is captured via monotonic clock."""
     config = AgentConfig(sample_interval_sec=0.2)
     collector = TelemetryCollector(config=config)
 
-    # First tick sets target_next_tick = now + 0.2
+    # First tick sets target_next_tick_mono = now_mono + 0.2
     _ = collector.collect_sample()
 
     # Sleep intentionally longer than 0.2s (e.g. 0.5s) to simulate a starved event loop
