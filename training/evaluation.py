@@ -29,6 +29,7 @@ class EpisodeEvalResult:
     failure_timestamp: Optional[float]
     first_alert_timestamp: Optional[float]
     lead_time_seconds: Optional[float]
+    lead_time_capped_seconds: Optional[float]
     detected_in_advance: bool
     effective_warning_ge_60s: bool  # Lead time >= 60.0s (actionable for POS)
     false_alert_events: int
@@ -36,6 +37,8 @@ class EpisodeEvalResult:
     normal_duration_seconds: float
     total_samples: int
     scenario_type: str = "unknown"
+    pre_injection_false_alarms: int = 0
+    is_benign_episode: bool = False
 
 
 @dataclass
@@ -66,6 +69,12 @@ class EvaluationReport:
     sample_level_f1: float
     effective_recall_ci: Tuple[float, float] = (0.0, 0.0)
     fa_per_shift_ci: Tuple[float, float] = (0.0, 0.0)
+    lead_time_capped_median_s: float = 0.0
+    lead_time_capped_mean_s: float = 0.0
+    total_benign_hours: float = 0.0
+    benign_false_alarm_events: int = 0
+    benign_false_alarms_per_8hr_shift: float = 0.0
+    benign_fa_per_shift_ci: Tuple[float, float] = (0.0, 0.0)
     scenario_breakdown: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     episode_results: List[EpisodeEvalResult] = field(default_factory=list)
 
@@ -82,6 +91,8 @@ class EvaluationReport:
             "missed_failures_count": self.missed_failures_count,
             "lead_time_median_s": round(self.lead_time_median_s, 1),
             "lead_time_mean_s": round(self.lead_time_mean_s, 1),
+            "lead_time_capped_median_s": round(self.lead_time_capped_median_s, 1),
+            "lead_time_capped_mean_s": round(self.lead_time_capped_mean_s, 1),
             "lead_time_cdf": {
                 "p10": round(self.lead_time_p10_s, 1),
                 "p25": round(self.lead_time_p25_s, 1),
@@ -92,6 +103,10 @@ class EvaluationReport:
             "false_alarms_per_hour": round(self.false_alarms_per_hour, 2),
             "false_alarms_per_8hr_shift": round(self.false_alarms_per_8hr_shift, 2),
             "fa_per_shift_ci_95": self.fa_per_shift_ci,
+            "total_benign_hours": round(self.total_benign_hours, 2),
+            "benign_false_alarm_events": self.benign_false_alarm_events,
+            "benign_false_alarms_per_8hr_shift": round(self.benign_false_alarms_per_8hr_shift, 2),
+            "benign_fa_per_shift_ci_95": self.benign_fa_per_shift_ci,
             "sample_level_f1": round(self.sample_level_f1, 4),
             "scenario_breakdown": self.scenario_breakdown,
         }
@@ -146,10 +161,18 @@ def evaluate_episode(
     labeled_samples, meta = label_episode_samples(samples, horizon_sec=horizon_sec)
     failure_ts = meta.failure_timestamp
 
-    # Infer scenario type
+    # Infer scenario type and injection onset
     scenario_type = "unknown"
+    injection_onset_ts: Optional[float] = None
     if samples and isinstance(samples[0], dict):
         scenario_type = samples[0].get("scenario_type", "unknown")
+        for s in samples:
+            if "injection_onset_timestamp" in s and s["injection_onset_timestamp"] is not None:
+                try:
+                    injection_onset_ts = float(s["injection_onset_timestamp"])
+                    break
+                except (ValueError, TypeError):
+                    pass
     if scenario_type == "unknown" and meta.episode_id:
         ep_lower = meta.episode_id.lower()
         if "mem" in ep_lower:
@@ -172,6 +195,7 @@ def evaluate_episode(
     false_alert_events = 0
     false_positive_ticks = 0
     normal_ticks = 0
+    pre_injection_fa = 0
 
     for sample, pred in zip(labeled_samples, predictions):
         ts = sample["timestamp"]
@@ -196,6 +220,8 @@ def evaluate_episode(
                 false_positive_ticks += 1
                 if not in_alert_streak:
                     false_alert_events += 1
+                    if meta.has_failed and injection_onset_ts is not None and ts < injection_onset_ts:
+                        pre_injection_fa += 1
                     in_alert_streak = True
             else:
                 in_alert_streak = False
@@ -203,12 +229,15 @@ def evaluate_episode(
             in_alert_streak = is_alert
 
     # Compute lead time in seconds
+    lead_time_capped: Optional[float] = None
     if meta.has_failed and failure_ts is not None and first_alert_ts is not None:
         lead_time = max(0.0, failure_ts - first_alert_ts)
+        lead_time_capped = min(lead_time, horizon_sec)
         detected = lead_time > 0.0
         effective = lead_time >= min_effective_lead_time_sec
     else:
         lead_time = 0.0 if meta.has_failed else None
+        lead_time_capped = 0.0 if meta.has_failed else None
         detected = False
         effective = False
 
@@ -220,6 +249,7 @@ def evaluate_episode(
         failure_timestamp=failure_ts,
         first_alert_timestamp=first_alert_ts,
         lead_time_seconds=lead_time,
+        lead_time_capped_seconds=lead_time_capped,
         detected_in_advance=detected,
         effective_warning_ge_60s=effective,
         false_alert_events=false_alert_events,
@@ -227,6 +257,8 @@ def evaluate_episode(
         normal_duration_seconds=normal_duration_s,
         total_samples=len(samples),
         scenario_type=scenario_type,
+        pre_injection_false_alarms=pre_injection_fa,
+        is_benign_episode=not meta.has_failed,
     )
 
 
@@ -299,6 +331,12 @@ def evaluate_detector(
         (effective_count / failure_episodes_count) if failure_episodes_count > 0 else 1.0
     )
 
+    lead_times_capped = [
+        r.lead_time_capped_seconds
+        for r in episode_results
+        if r.has_failed and r.lead_time_capped_seconds is not None
+    ]
+
     if lead_times:
         lead_mean = statistics.mean(lead_times)
         lead_median = statistics.median(lead_times)
@@ -311,9 +349,20 @@ def evaluate_detector(
     else:
         lead_mean = lead_median = lead_min = lead_max = lead_p10 = lead_p25 = lead_p75 = lead_p90 = 0.0
 
+    lead_capped_mean = statistics.mean(lead_times_capped) if lead_times_capped else 0.0
+    lead_capped_median = statistics.median(lead_times_capped) if lead_times_capped else 0.0
+
     normal_hours = total_normal_sec / 3600.0
     fa_per_hour = (total_false_events / normal_hours) if normal_hours > 0 else 0.0
     fa_per_8hr_shift = round(fa_per_hour * 8.0, 2)
+
+    # Benign / Soak shift false alarm rate (evaluated on normal and hard negative shifts)
+    benign_results = [r for r in episode_results if not r.has_failed]
+    total_benign_sec = sum(r.normal_duration_seconds for r in benign_results)
+    benign_false_events = sum(r.false_alert_events for r in benign_results)
+    total_benign_hours = total_benign_sec / 3600.0
+    benign_fa_per_hour = (benign_false_events / total_benign_hours) if total_benign_hours > 0 else 0.0
+    benign_fa_per_8hr_shift = round(benign_fa_per_hour * 8.0, 2)
 
     precision = (total_tp / (total_tp + total_fp)) if (total_tp + total_fp) > 0 else 0.0
     recall = (total_tp / (total_tp + total_fn)) if (total_tp + total_fn) > 0 else 0.0
@@ -333,6 +382,12 @@ def evaluate_detector(
     )
     fa_shift_ci = compute_bootstrap_ci(
         episode_results,
+        metric_fn=lambda r_list: (
+            (sum(r.false_alert_events for r in r_list) / max(0.001, sum(r.normal_duration_seconds for r in r_list) / 3600.0)) * 8.0
+        ),
+    )
+    benign_fa_shift_ci = compute_bootstrap_ci(
+        benign_results if benign_results else episode_results,
         metric_fn=lambda r_list: (
             (sum(r.false_alert_events for r in r_list) / max(0.001, sum(r.normal_duration_seconds for r in r_list) / 3600.0)) * 8.0
         ),
@@ -387,6 +442,12 @@ def evaluate_detector(
         sample_level_f1=f1,
         effective_recall_ci=eff_recall_ci,
         fa_per_shift_ci=fa_shift_ci,
+        lead_time_capped_median_s=lead_capped_median,
+        lead_time_capped_mean_s=lead_capped_mean,
+        total_benign_hours=total_benign_hours,
+        benign_false_alarm_events=benign_false_events,
+        benign_false_alarms_per_8hr_shift=benign_fa_per_8hr_shift,
+        benign_fa_per_shift_ci=benign_fa_shift_ci,
         scenario_breakdown=scenario_breakdown,
         episode_results=episode_results,
     )

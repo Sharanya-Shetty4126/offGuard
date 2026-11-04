@@ -1,15 +1,16 @@
 """Synthetic and realistic episode dataset generator for offGuard benchmarking.
 
-Generates a realistic, varied corpus of 40 episodes for training and evaluating:
-1. Slow Memory Leaks (1-4 MB/s, 240-360s duration, POS cache leak)
-2. Fast Memory Leaks (15-30 MB/s, 120-180s duration)
-3. CPU Starvation (POS worker thread loop, CPU pinned 98%, climbing scheduler lag)
-4. Disk Thrash (Database vacuum / log saturation)
-5. Benign App Startup Plateau (Initial ramp then 3 min flat plateau)
-6. Benign Antivirus Burst (45s background scan then idle)
-7. Benign File Export / EOD report (30s burst)
-8. Normal Cashier Shift / Soak (Continuous normal operation, jitter, no failure)
+Generates a balanced corpus of 115 episodes across 8 realistic retail scenarios:
+1. Slow Memory Leaks (20 episodes: 1.0-3.5 MB/s, 240-360s duration, POS bitmap leak)
+2. Fast Memory Leaks (15 episodes: 15-30 MB/s, 120-180s duration, unbounded queue)
+3. CPU Starvation (15 episodes: POS thread lock / infinite loop, CPU 98%, climbing lag)
+4. Disk Thrash (15 episodes: Database vacuum / journal saturation - HELD OUT SCENARIO)
+5. Benign App Startup Plateau (12 episodes: Initial +20% jump then stable flat plateau for 3+ min)
+6. Benign Antivirus Burst (12 episodes: Defender scan for 45s then returns to idle)
+7. Benign File Export / EOD report (10 episodes: 30s CPU + disk burst then idle)
+8. Normal Cashier Shift / Soak (16 episodes: Continuous normal checkout operation, jitter, no failure)
 
+Total: 115 episodes (65 failure episodes + 50 benign normal/hard-negative episodes).
 All episodes are written to data/episodes/<episode_id>/ with telemetry.csv and manifest.json.
 """
 
@@ -36,10 +37,12 @@ def _generate_slow_memory_leak(
     """Simulate a gradual retail POS memory leak (e.g. unclosed barcode bitmap handles)."""
     rng = random.Random(seed)
     samples = []
-    leak_rate_mb_s = rng.uniform(1.2, 3.5)  # Realistic slow leak
+    leak_rate_mb_s = rng.uniform(1.2, 3.5)
     total_ram_mb = 8192.0
     start_free_ram = rng.uniform(4200.0, 5200.0)
 
+    # Injection starts after a 30s normal baseline
+    injection_onset_idx = 30
     failure_time_idx = duration_s - int(rng.uniform(20, 40))
 
     current_free = start_free_ram
@@ -47,18 +50,20 @@ def _generate_slow_memory_leak(
         t = base_t + i
         t_mono = float(i)
 
-        # Gradual drain
-        current_free = max(150.0, current_free - leak_rate_mb_s + rng.gauss(0, 0.4))
+        if i >= injection_onset_idx:
+            current_free = max(150.0, current_free - leak_rate_mb_s + rng.gauss(0, 0.3))
+        else:
+            current_free = max(150.0, current_free + rng.gauss(0, 0.5))
+
         mem_pct = round(((total_ram_mb - current_free) / total_ram_mb) * 100.0, 1)
         commit_pct = min(99.0, round(mem_pct * rng.uniform(0.92, 0.98), 1))
 
-        # Scheduler lag: stays low until near-exhaustion (< 300 MB free)
         if i >= failure_time_idx:
-            lag = round(rng.uniform(3.2, 5.5), 3)  # Outright freeze
+            lag = round(rng.uniform(3.2, 5.5), 3)
         elif current_free < 400.0:
-            lag = round(rng.uniform(0.4, 1.8), 3)  # Severe thrashing
+            lag = round(rng.uniform(0.4, 1.8), 3)
         elif current_free < 800.0:
-            lag = round(rng.uniform(0.1, 0.35), 3)
+            lag = round(rng.uniform(0.08, 0.3), 3)
         else:
             lag = round(max(0.005, rng.gauss(0.015, 0.005)), 3)
 
@@ -68,7 +73,7 @@ def _generate_slow_memory_leak(
                 "timestamp_mono": round(t_mono, 3),
                 "timestamp_iso": datetime.fromtimestamp(t, tz=timezone.utc).isoformat(),
                 "episode_id": ep_id,
-                "scenario_type": "memory_leak",
+                "scenario_type": "slow_memory_leak",
                 "cpu_percent": round(min(95.0, max(5.0, 18.0 + rng.gauss(0, 4.0))), 1),
                 "mem_percent": mem_pct,
                 "mem_available_mb": round(current_free, 1),
@@ -82,6 +87,7 @@ def _generate_slow_memory_leak(
                 "top_proc_cpu": 12.0,
                 "top_proc_mem_mb": round(total_ram_mb - current_free, 1),
                 "ctx_switches_s": round(max(5000.0, 14000.0 + rng.gauss(0, 1000)), 1),
+                "injection_onset_timestamp": round(base_t + injection_onset_idx, 3),
             }
         )
     return samples
@@ -90,24 +96,29 @@ def _generate_slow_memory_leak(
 def _generate_fast_memory_leak(
     ep_id: str,
     base_t: float = 1700000000.0,
-    duration_s: int = 150,
+    duration_s: int = 160,
     seed: int = 42,
 ) -> List[Dict[str, Any]]:
-    """Simulate a rapid memory leak (e.g. runaway unbounded cache loop)."""
+    """Simulate a rapid memory leak (unbounded cache queue)."""
     rng = random.Random(seed)
     samples = []
     leak_rate_mb_s = rng.uniform(18.0, 32.0)
     total_ram_mb = 8192.0
     start_free_ram = rng.uniform(3500.0, 4500.0)
 
-    failure_time_idx = duration_s - int(rng.uniform(20, 35))
+    injection_onset_idx = 20
+    failure_time_idx = duration_s - int(rng.uniform(15, 30))
 
     current_free = start_free_ram
     for i in range(duration_s):
         t = base_t + i
         t_mono = float(i)
 
-        current_free = max(120.0, current_free - leak_rate_mb_s + rng.gauss(0, 1.0))
+        if i >= injection_onset_idx:
+            current_free = max(120.0, current_free - leak_rate_mb_s + rng.gauss(0, 1.0))
+        else:
+            current_free = max(120.0, current_free + rng.gauss(0, 0.5))
+
         mem_pct = round(((total_ram_mb - current_free) / total_ram_mb) * 100.0, 1)
         commit_pct = min(99.0, round(mem_pct * 0.95, 1))
 
@@ -124,7 +135,7 @@ def _generate_fast_memory_leak(
                 "timestamp_mono": round(t_mono, 3),
                 "timestamp_iso": datetime.fromtimestamp(t, tz=timezone.utc).isoformat(),
                 "episode_id": ep_id,
-                "scenario_type": "memory_leak",
+                "scenario_type": "fast_memory_leak",
                 "cpu_percent": round(min(98.0, max(10.0, 35.0 + rng.gauss(0, 5.0))), 1),
                 "mem_percent": mem_pct,
                 "mem_available_mb": round(current_free, 1),
@@ -138,6 +149,7 @@ def _generate_fast_memory_leak(
                 "top_proc_cpu": 28.0,
                 "top_proc_mem_mb": round(total_ram_mb - current_free, 1),
                 "ctx_switches_s": round(max(8000.0, 22000.0 + rng.gauss(0, 2000)), 1),
+                "injection_onset_timestamp": round(base_t + injection_onset_idx, 3),
             }
         )
     return samples
@@ -146,13 +158,13 @@ def _generate_fast_memory_leak(
 def _generate_cpu_starvation(
     ep_id: str,
     base_t: float = 1700000000.0,
-    duration_s: int = 200,
+    duration_s: int = 220,
     seed: int = 42,
 ) -> List[Dict[str, Any]]:
     """Simulate POS worker thread deadlock / spinning loop starvation."""
     rng = random.Random(seed)
     samples = []
-    starve_start_idx = 40
+    starve_start_idx = 35
     failure_time_idx = duration_s - int(rng.uniform(15, 30))
 
     for i in range(duration_s):
@@ -168,7 +180,6 @@ def _generate_cpu_starvation(
             ctx = rng.uniform(75000.0, 95000.0)
             lag = rng.uniform(3.4, 5.8)
         else:
-            # Gradual lock-up and queue backup
             progress = (i - starve_start_idx) / (failure_time_idx - starve_start_idx)
             cpu = min(100.0, 80.0 + progress * 20.0 + rng.gauss(0, 1.0))
             ctx = 30000.0 + progress * 50000.0 + rng.gauss(0, 3000)
@@ -194,6 +205,7 @@ def _generate_cpu_starvation(
                 "top_proc_cpu": round(cpu * 0.9, 1),
                 "top_proc_mem_mb": 450.0,
                 "ctx_switches_s": round(ctx, 1),
+                "injection_onset_timestamp": round(base_t + starve_start_idx, 3),
             }
         )
     return samples
@@ -202,10 +214,10 @@ def _generate_cpu_starvation(
 def _generate_disk_thrash(
     ep_id: str,
     base_t: float = 1700000000.0,
-    duration_s: int = 180,
+    duration_s: int = 200,
     seed: int = 42,
 ) -> List[Dict[str, Any]]:
-    """Simulate disk saturation / database thrashing."""
+    """Simulate disk saturation / database thrashing (Held-Out Scenario)."""
     rng = random.Random(seed)
     samples = []
     thrash_start = 30
@@ -249,6 +261,7 @@ def _generate_disk_thrash(
                 "top_proc_cpu": round(cpu * 0.7, 1),
                 "top_proc_mem_mb": 350.0,
                 "ctx_switches_s": round(max(8000.0, 35000.0 + rng.gauss(0, 3000)), 1),
+                "injection_onset_timestamp": round(base_t + thrash_start, 3),
             }
         )
     return samples
@@ -264,20 +277,18 @@ def _generate_app_startup_plateau(
     rng = random.Random(seed)
     samples = []
     base_mem = rng.uniform(42.0, 48.0)
-    jump_mem = rng.uniform(18.0, 24.0)  # +20% jump
+    jump_mem = rng.uniform(18.0, 24.0)
 
     for i in range(duration_s):
         t = base_t + i
         t_mono = float(i)
 
         if i < 15:
-            # Ramping up during startup
             prog = i / 15.0
             mem = base_mem + prog * jump_mem
             cpu = 20.0 + prog * 60.0 + rng.gauss(0, 4.0)
             lag = 0.05 + prog * 0.1
         else:
-            # Stable plateau! Memory does NOT continue rising; slope -> 0.0
             mem = base_mem + jump_mem + rng.gauss(0, 0.3)
             cpu = max(5.0, 16.0 + rng.gauss(0, 3.0))
             lag = max(0.005, rng.gauss(0.015, 0.005))
@@ -424,7 +435,6 @@ def _generate_routine_soak(
         t = base_t + i
         t_mono = float(i)
 
-        # Cashier scanning burst every 20-30 seconds
         is_scanning = (i % 35) < 12
         cpu = (25.0 if is_scanning else 12.0) + rng.gauss(0, 3.0)
         cpu = min(60.0, max(5.0, cpu))
@@ -459,7 +469,7 @@ def generate_full_dataset(
     output_dir: str = "data/episodes",
     seed: int = 101,
 ) -> List[Tuple[List[Dict[str, Any]], EpisodeManifest]]:
-    """Generate balanced corpus of 40 episodes across 8 realistic retail scenarios."""
+    """Generate balanced corpus of 115 episodes across 8 realistic retail scenarios."""
     os.makedirs(output_dir, exist_ok=True)
     all_episodes = []
     base_epoch = 1700000000.0
@@ -467,17 +477,17 @@ def generate_full_dataset(
 
     scenario_specs = [
         # (generator_fn, count, scenario_name, duration_s)
-        (_generate_slow_memory_leak, 8, "slow_memory_leak", 300),
-        (_generate_fast_memory_leak, 6, "fast_memory_leak", 160),
-        (_generate_cpu_starvation, 6, "cpu_starvation", 220),
-        (_generate_disk_thrash, 6, "disk_thrash", 190),
-        (_generate_app_startup_plateau, 4, "app_startup", 240),
-        (_generate_antivirus_burst, 4, "antivirus_burst", 200),
-        (_generate_file_export, 3, "file_export", 180),
-        (_generate_routine_soak, 3, "routine_soak", 360),
+        (_generate_slow_memory_leak, 20, "slow_memory_leak", 300),
+        (_generate_fast_memory_leak, 15, "fast_memory_leak", 160),
+        (_generate_cpu_starvation, 15, "cpu_starvation", 220),
+        (_generate_disk_thrash, 15, "disk_thrash", 200),
+        (_generate_app_startup_plateau, 12, "app_startup", 240),
+        (_generate_antivirus_burst, 12, "antivirus_burst", 200),
+        (_generate_file_export, 10, "file_export", 180),
+        (_generate_routine_soak, 16, "routine_soak", 360),
     ]
 
-    print(f"[Dataset Generator] Generating 40 realistic episodes to '{output_dir}'...")
+    print(f"[Dataset Generator] Generating 115 realistic episodes to '{output_dir}'...")
 
     for gen_fn, count, name, dur in scenario_specs:
         for idx in range(count):
